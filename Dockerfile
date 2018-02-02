@@ -7,4 +7,4 @@ VOLUME /tmp
 
 ARG JAR_FILE
 ADD ${JAR_FILE} infraauto-demo.jar
-ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/infraauto-demo.jar"]
+ENTRYPOINT ["java","-jar","target/infraauto-demo.jar"]
