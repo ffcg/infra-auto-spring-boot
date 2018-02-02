@@ -1,0 +1,144 @@
+{
+  "kind": "Template",
+  "apiVersion": "v1",
+  "name": "${APPNAME}-build-template",
+  "metadata": {
+    "labels": {
+      "app": "${APPNAME}"
+    }
+  },
+  "objects": [
+    {
+      "apiVersion": "v1",
+      "kind": "BuildConfig",
+      "metadata": {
+        "name": "${APPNAME}-build-pipeline",
+        "namespace": "${SRC_ENV}"
+      },
+      "spec": {
+        "runPolicy": "Serial",
+        "source": {
+          "git": {
+            "ref": "${GIT_BRANCH}",
+            "uri": "${GIT_REPO_URL}"
+          },
+          "type": "Git"
+        },
+        "strategy": {
+          "jenkinsPipelineStrategy": {
+            "env": [
+              {
+                "name": "GIT_SOURCE_URL",
+                "value": "${GIT_REPO_URL}"
+              },
+              {
+                "name": "APPNAME",
+                "value": "${APPNAME}"
+              },
+              {
+                "name": "envBuild",
+                "value": "${SRC_ENV}"
+              },
+              {
+                "name": "branchName",
+                "value": "${GIT_BRANCH}"
+              }
+            ],
+            "jenkinsfilePath": "openshift/JenkinsfileBuildPipeline"
+          },
+          "type": "JenkinsPipeline"
+        },
+        "triggers": [
+          {
+            "github": {
+              "secret": "aqIwknGWzr5JJrFYhysg"
+            },
+            "type": "GitHub"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ImageStream",
+      "metadata": {
+        "name": "${APPNAME}",
+        "namespace": "${SRC_ENV}"
+      },
+      "spec": {
+        "lookupPolicy": {
+          "local": false
+        }
+      },
+      "status": {
+        "dockerImageRepository": "172.30.1.1:5000/${SRC_ENV}/${APPNAME}"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "BuildConfig",
+      "metadata": {
+        "name": "${APPNAME}-binary-to-image",
+        "namespace": "${SRC_ENV}",
+        "annotations": {
+          "description": "Build configuration that is used in pipeline."
+        }
+      },
+      "spec": {
+        "runPolicy": "Serial",
+        "output": {
+          "to": {
+            "kind": "ImageStreamTag",
+            "name": "${APPNAME}:latest",
+            "namespace": "${SRC_ENV}"
+          }
+        },
+        "source": {
+          "binary": {},
+          "type": "Binary"
+        },
+        "strategy": {
+          "sourceStrategy": {
+            "from": {
+              "kind": "ImageStreamTag",
+              "name": "openjdk:latest",
+              "namespace": "openshift"
+            }
+          },
+          "type": "Source"
+        }
+      }
+    }
+  ],
+
+  "parameters": [
+    {
+      "name": "SRC_ENV",
+      "displayName": "environment",
+      "description": "Name of target environment",
+      "value": "infra-auto",
+      "required": true
+    },
+    {
+      "name": "APPNAME",
+      "displayName": "application name",
+      "description": "Name of application",
+      "value": "infra-auto-spring-boot",
+      "required": true
+    },
+    {
+      "name": "GIT_REPO_URL",
+      "displayName": "Git source repository url",
+      "description": "URL to the git repository with the source code. Starting with ssh://",
+      "value": "https://github.com/ffcg/infra-auto-spring-boot.git",
+      "required": true
+    },
+    {
+      "name": "GIT_BRANCH",
+      "displayName": "Branch to build",
+      "description": "Specify what branch of the git repository to build",
+      "value": "albins-branch",
+      "required": true
+    }
+  ]
+}

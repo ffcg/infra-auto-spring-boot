@@ -1,0 +1,215 @@
+def buildConfigName = "${APPNAME}-binary-to-image"
+def VERSION_TAG =""
+def credentialsName = "${envBuild}-git-secret"
+//ToDo generate good build name with version number
+// And maybe change the name of this variable, it is used for integration tests
+def itName = "${APPNAME}-it"
+def itEnv = "build"
+def GIT_COMMIT_AUTHOR = "jenkins"
+
+def cleanup() {
+    sh "rm -rf *"
+}
+
+/**
+ * Archive test results
+ */
+def archiveTestResults() {
+    junit '**/target/surefire-reports/TEST-*.xml'
+    junit '**/target/failsafe-reports/TEST-*.xml'
+}
+
+/**
+ * Delete all the resources we needed to create and deploy our app on Openshift
+ */
+def deleteOpenshiftResources(itName, env){
+    echo "about to delete IT ${itName} in environment ${env}"
+    //sh "oc delete project ${itEnvironment}"
+    sh "oc delete all -l itName=${itName} -n ${env}"
+    echo "IT ${itName} deleted"
+}
+
+/**
+ * Get changes made in this build
+ */
+@NonCPS
+def getChanges() {
+    def changeString = ""
+    def changeLogSets = currentBuild.changeSets
+    for (int i = 0; i < changeLogSets.size(); i++) {
+        def entries = changeLogSets[i].items
+        for (int j = 0; j < entries.length; j++) {
+            def entry = entries[j]
+            changeString = changeString + "By ${entry.author} on ${new Date(entry.timestamp)}: ${entry.msg} \n"
+            echo "By ${entry.author} on ${new Date(entry.timestamp)}: ${entry.msg}"
+            def files = new ArrayList(entry.affectedFiles)
+            for (int k = 0; k < files.size(); k++) {
+                def file = files[k]
+                changeString = changeString + " - ${file.editType.name} ${file.path} \n"
+                echo " - ${file.editType.name} ${file.path}"
+            }
+        }
+    }
+    return changeString
+}
+
+try {
+    timeout(time: 20, unit: 'MINUTES') {
+
+        node("maven") {
+            stage("Initialize") {
+                cleanup()
+                git branch: branchName, credentialsId: credentialsName, url: GIT_SOURCE_URL
+
+                // ToDo commita först sen tagga, göra det efter att integrations testerna har gått igenom?
+                sshagent(credentials: [credentialsName]) {
+                    sh "git config user.email \"jenkins@example.com\""
+                    sh "git config user.name \"${GIT_COMMIT_AUTHOR}\""
+
+                    /*
+                        Stop if this commit is done by Jenkins
+                    */
+                    def author = sh(returnStdout: true,script: 'git --no-pager log -1 -s --format=\'%an\'').trim()
+                    IS_JENKINS_COMMIT = GIT_COMMIT_AUTHOR.equalsIgnoreCase(author)
+                    echo "Last push author: ${author}"
+                    echo "GIT_COMMIT_AUTHOR: ${GIT_COMMIT_AUTHOR}"
+                    echo "IS_JENKINS_COMMIT: ${IS_JENKINS_COMMIT}"
+                    if (IS_JENKINS_COMMIT) {
+                        echo "Pipeline has been stopped, this is a jenkins-commit"
+                        currentBuild.result = 'ABORTED'
+                        echo('Stopping early…')
+                        error('Stopping early…')
+                    }
+
+                    /*
+                        Get the latest tag in the git repo
+                    */
+                    def latestTag = sh(returnStdout: true,script: 'git describe --abbrev=0').trim()
+                    echo "Latest tag: ${latestTag}"
+
+
+                    // ToDo is there any need to check if this commit has the latestTag?
+                    /*
+                        Get the tag of this commit. If it has a tag and its the same as the latestTag this
+
+                    def tagInThisCommit = sh(returnStdout: true,script: 'git tag -l --points-at HEAD').trim()
+                    echo "Tag in this commit: ${tagInThisCommit}"
+                    IS_ALREADY_BUILT = latestTag.equalsIgnoreCase(tagInThisCommit)
+
+                    echo "Is this tag already built: ${IS_ALREADY_BUILT}"
+
+                    if (IS_ALREADY_BUILT) {
+                        echo "Pipeline has been stopped, this tag has already been built"
+                        currentBuild.result = 'ABORTED'
+                        echo('Stopping early…')
+                        error('Stopping early…')
+                    }
+                    */
+
+                    def semanticVersion = latestTag.split("\\.");
+                    echo "semanticVersion ${semanticVersion}"
+                    VERSION_TAG = semanticVersion[0] + "." + (Integer.parseInt(semanticVersion[1]) + 1) + "." + semanticVersion[2];
+                    itName = itName + "-" + semanticVersion[0] + "-" + (Integer.parseInt(semanticVersion[1]) + 1) + "-" + semanticVersion[2];
+
+                    echo "###############################"
+                    echo "Last VERSION_TAG: ${latestTag}"
+                    echo "New VERSION_TAG: ${VERSION_TAG}"
+                    echo "itName: ${itName}"
+                    echo "itEnv: ${itEnv}"
+                    echo "###############################"
+                }
+            }
+
+            stage("Build and unit test") {
+                sh "mvn clean install --batch-mode --settings maven_settings.xml"
+            }
+
+            stage("Prepare for integration test") {
+
+                //ToDo steps regarding setting up integration tests should maybe be done in a different environment
+
+                /*
+                 * Create all the resources needed on Openshift to spin up an instance of the docker image to test against
+                 * ToDo change labels. Have a status label?
+                 */
+                sh "oc process -f openshift/deploy-integration-test-template.json -p ENVIRONMENT=${itEnv} ITNAME=${itName} -l itName=${itName} | oc create -f - -n ${itEnv}"
+
+                /*
+                 * Update integration test buildconfig to use builds imagestream instead
+                 */
+                VERSION_TAG_IT = VERSION_TAG + "-it"
+                // ToDo do we need a -n here?
+                sh "oc patch bc ${buildConfigName} -p '{\"spec\":{\"output\":{\"imageLabels\":[{\"name\": \"atg-version\",\"value\":\"${VERSION_TAG_IT}\"}]}}}' -n ${envBuild}"
+                sh "oc patch bc ${buildConfigName} -p '{\"spec\":{\"output\":{\"to\":{\"name\":\"${APPNAME}:${VERSION_TAG_IT}\"}}}}' -n ${envBuild}"
+
+                /*
+                 * Start the buildConfig we just created with the jar of our app to create our docker image.
+                 */
+                def jar = findFiles glob: '*/target/*.jar'
+                sh "oc start-build ${buildConfigName} --from-file=${jar[0].path} -n ${envBuild}"
+
+                /*
+                 * Deploy the docker image on Openshift
+                 */
+                sh "oc patch dc ${itName} -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"image\":\"docker-registry.default.svc:5000/${envBuild}/${APPNAME}:${VERSION_TAG_IT}\",\"name\":\"${itName}\"}]}}}}' -n ${itEnv}"
+                openshiftDeploy(itName)
+            }
+
+            stage("Integration test") {
+                /*
+                 * Run integration tests against the our app we just spun up on Openshift in our docker image
+                 */
+                //sh "mvn verify -P run-it -D se.atg.service.environment=https://${itName}.ocp.hh.atg.se --settings maven_settings.xml"
+            }
+
+            stage("Update version tags, archive and clean up") {
+                /*
+                    Update image lables
+                */
+                VERSION_TAG_IT = VERSION_TAG + "-it"
+                VERSION_TAG_OK = VERSION_TAG + "-ok"
+                sh "oc tag ${APPNAME}:${VERSION_TAG_IT} ${APPNAME}:${VERSION_TAG_OK} -n ${envBuild}"
+                sh "oc tag ${APPNAME}:${VERSION_TAG_OK} ${APPNAME}:latest -n ${envBuild}"
+
+                /*
+                    Update changelog
+                */
+                def changesInThisBuild = "*${VERSION_TAG}*\n" + getChanges()
+                def changeLog = readFile "CHANGELOG.md"
+                writeFile file: 'CHANGELOG.md', text: "${changesInThisBuild}\n${changeLog}"
+
+
+                /*
+                    Push new tag to git
+                */
+                sshagent(credentials: [credentialsName]) {
+                    sh "git commit -am \"Jenkins updating changelog for version: ${VERSION_TAG}\""
+                    sh "git push"
+                    sh "git tag -a ${VERSION_TAG} -m \"Tagged by Jenkins build pipeline. Tag: ${VERSION_TAG}\""
+                    sh "git push origin ${VERSION_TAG}"
+                }
+
+                archiveTestResults()
+                deleteOpenshiftResources(itName, itEnv)
+                cleanup()
+            }
+        }
+    }
+} catch (err) {
+    echo "in catch block"
+    echo "Caught: ${err}"
+    node("maven") {
+        try {
+            archiveTestResults()
+        } catch (errTestResults) {
+            echo "Error archiving test results: ${errTestResults}"
+        }
+        try {
+            deleteOpenshiftResources(itName, itEnv)
+        } catch (errDeletingOcRes) {
+            echo "Error deleting Openshift resources: ${errDeletingOcRes}"
+        }
+        cleanup()
+    }
+    throw err
+}
