@@ -102,7 +102,7 @@ try {
             }
 
             stage("Build and unit test") {
-                sh "mvn clean install --batch-mode --settings maven_settings.xml"
+                sh "mvn clean install --batch-mode"
             }
 
             stage("Prepare for integration test") {
@@ -179,7 +179,7 @@ try {
 } catch (err) {
     echo "in catch block"
     echo "Caught: ${err}"
-    node("maven") {
+    node() {
         try {
             archiveTestResults()
         } catch (errTestResults) {
