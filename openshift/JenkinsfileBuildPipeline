@@ -65,9 +65,9 @@ try {
 
                 /*
                     Get the latest tag in the git repo
-                */
                 def latestTag = sh(returnStdout: true,script: 'git describe --abbrev=0').trim()
                 echo "Latest tag: ${latestTag}"
+                */
 
 
                 // ToDo is there any need to check if this commit has the latestTag?
@@ -88,6 +88,7 @@ try {
                 }
                 */
 
+                /*
                 def semanticVersion = latestTag.split("\\.");
                 echo "semanticVersion ${semanticVersion}"
                 VERSION_TAG = semanticVersion[0] + "." + (Integer.parseInt(semanticVersion[1]) + 1) + "." + semanticVersion[2];
@@ -99,6 +100,7 @@ try {
                 echo "itName: ${itName}"
                 echo "itEnv: ${itEnv}"
                 echo "###############################"
+                */
             }
 
             stage("Build and unit test") {
