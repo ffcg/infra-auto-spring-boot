@@ -59,7 +59,7 @@ try {
         node() {
             stage("Initialize") {
                 cleanup()
-                git branch: branchName, credentialsId: credentialsName, url: GIT_SOURCE_URL
+                git branch: branchName, url: GIT_SOURCE_URL
 
                 // ToDo commita först sen tagga, göra det efter att integrations testerna har gått igenom?
 
